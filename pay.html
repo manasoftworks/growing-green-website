@@ -70,9 +70,15 @@
         <thead><tr><th>Item</th><th style="text-align:center">Qty</th><th style="text-align:right">Price</th></tr></thead>
         <tbody id="items"></tbody>
       </table>
+      <!--
+        Both fee rows are hidden until the payload actually carries them, so a
+        payload with neither (a legacy Quick Order, a wholesale pickup order)
+        renders exactly as it did before the delivery fee existed.
+      -->
       <div class="breakdown" id="breakdown" hidden>
         <div class="breakdown-row"><span>Subtotal</span><span id="subtotal"></span></div>
-        <div class="breakdown-row"><span>Service fee</span><span id="service-fee"></span></div>
+        <div class="breakdown-row" id="service-fee-row" hidden><span>Service fee</span><span id="service-fee"></span></div>
+        <div class="breakdown-row" id="delivery-row" hidden><span id="delivery-label">Delivery fee</span><span id="delivery-fee"></span></div>
       </div>
       <div class="total" id="total"></div>
       <label for="card-element">Card details</label>
@@ -185,20 +191,57 @@
       // containing markup is displayed, never executed.
       $('farm-line').textContent = 'Order from ' + (d.farmName || 'your farm');
       $('order-ref').textContent = '#' + (d.orderRef || '');
-      // Fee transparency (2026-08-31): the item rows sum to the product
-      // subtotal while the total includes the service fee — without the
-      // breakdown the math visibly didn't add up. serviceFeeCents absent
-      // (older fn) or 0 (wholesale / legacy orders) keeps the old look.
+      // Fee transparency (2026-08-31; farmer delivery fee added 2026-09-05).
+      // The item rows sum to the PRODUCT subtotal while the total also carries
+      // the buyer service fee AND the farm's delivery fee — without the
+      // breakdown the math visibly doesn't add up on the one page where the
+      // buyer authorizes their card. Gating the whole block on the service fee
+      // meant a wholesale order (service-fee exempt, so always 0) disclosed its
+      // delivery fee NOWHERE on this page.
       var fee = d.serviceFeeCents || 0;
-      if (fee > 0) {
-        $('subtotal').textContent = money(Math.max(0, (d.totalCents || 0) - fee));
-        $('service-fee').textContent = money(fee);
+      // Delivery is decided by PRESENCE of the key, mirroring the
+      // orders.delivery_fee_cents stamp that payment-checkout reads:
+      //   absent → not a delivery order (pickup, or a farm that does not offer
+      //            wholesale delivery). Print nothing.
+      //   0      → delivered with the fee waived. This DOES print a row; a 0
+      //            must never be shown as "this farm doesn't deliver".
+      //   > 0    → the fee the buyer is consenting to by saving their card.
+      var hasDelivery = d.deliveryFeeCents !== undefined && d.deliveryFeeCents !== null;
+      var deliveryFee = hasDelivery ? Math.max(0, Number(d.deliveryFeeCents) || 0) : 0;
+      if (fee > 0 || hasDelivery) {
+        // The SERVER owns every figure here. This page used to derive the
+        // subtotal as total − service fee, which over-states it by the whole
+        // delivery fee on a delivery order; payment-checkout now sends
+        // subtotalCents outright. The subtraction survives only as a fallback
+        // for a payload from an older deployed function (deploy skew), where
+        // there is no delivery fee to be wrong about.
+        var subtotal = (typeof d.subtotalCents === 'number')
+          ? Math.max(0, d.subtotalCents)
+          : Math.max(0, (d.totalCents || 0) - fee - deliveryFee);
+        $('subtotal').textContent = money(subtotal);
+        if (fee > 0) {
+          $('service-fee').textContent = money(fee);
+          $('service-fee-row').hidden = false;
+        }
+        if (hasDelivery) {
+          // Same two shapes as the emails, so the page and the mail agree.
+          $('delivery-label').textContent = deliveryFee > 0 ? 'Delivery fee' : 'Delivery';
+          $('delivery-fee').textContent = deliveryFee > 0 ? money(deliveryFee) : 'Free';
+          $('delivery-row').hidden = false;
+        }
         $('breakdown').hidden = false;
       }
       $('total').textContent = money(d.totalCents);
+      // Same delivery signal as the fee row above (payment-checkout sends
+      // fulfillmentMethod alongside it), so this page says what the payment
+      // email that linked here says — "ready for delivery" on a delivery
+      // order, and the byte-identical pre-P8 sentence on every other one.
       $('note').textContent =
         'Your card will not be charged now. It is charged when ' +
-        (d.farmName || 'the farm') + ' confirms your order is ready.';
+        (d.farmName || 'the farm') +
+        (hasDelivery
+          ? ' confirms your order is ready for delivery.'
+          : ' confirms your order is ready.');
       $('done-body').textContent =
         'Your card is saved — you have not been charged yet. ' +
         (d.farmName || 'The farm') +

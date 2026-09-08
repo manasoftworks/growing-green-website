@@ -204,27 +204,59 @@
       $('heading').textContent = 'Your ' + (d.farmName || 'farm') + ' order';
       $('deliver-line').textContent = 'Delivery ' + (d.deliverOn || '');
 
-      var lines = d.lines || [];
-      if (lines.length) {
-        var tbody = $('items');
-        lines.forEach(function (it) {
-          var tr = document.createElement('tr');
-          var name = document.createElement('td');
-          name.textContent = it.name || 'Item';
-          var qty = document.createElement('td');
-          qty.style.textAlign = 'center';
-          qty.textContent = '×' + String(it.quantity == null ? 1 : it.quantity);
-          var price = document.createElement('td');
-          price.style.textAlign = 'right';
-          price.textContent = (it.lineCents == null) ? '—' : money(it.lineCents);
-          tr.appendChild(name); tr.appendChild(qty); tr.appendChild(price);
-          tbody.appendChild(tr);
-        });
+      // One row builder for items AND the delivery line, so the delivery row
+      // is laid out identically to the ones above it (same three columns,
+      // same alignment) — the draft email renders it inside the same table.
+      var tbody = $('items');
+      function addRow(name, qty, price) {
+        var tr = document.createElement('tr');
+        var nameCell = document.createElement('td');
+        nameCell.textContent = name;
+        var qtyCell = document.createElement('td');
+        qtyCell.style.textAlign = 'center';
+        qtyCell.textContent = qty;
+        var priceCell = document.createElement('td');
+        priceCell.style.textAlign = 'right';
+        priceCell.textContent = price;
+        tr.appendChild(nameCell); tr.appendChild(qtyCell); tr.appendChild(priceCell);
+        tbody.appendChild(tr);
         $('items-table').hidden = false;
       }
 
-      if (typeof d.estimateCents === 'number') {
-        $('total').textContent = 'Estimated total: ' + money(d.estimateCents);
+      var lines = d.lines || [];
+      lines.forEach(function (it) {
+        addRow(
+          it.name || 'Item',
+          '×' + String(it.quantity == null ? 1 : it.quantity),
+          (it.lineCents == null) ? '—' : money(it.lineCents)
+        );
+      });
+
+      // WHOLESALE DELIVERY. The fee gets its own row, exactly as the draft
+      // email prints it, because the buyer confirms on THIS page: quoting
+      // $515.00 in the inbox and $500.00 here means they click Confirm on the
+      // wrong number. The key is ABSENT when the farm does not offer wholesale
+      // delivery (or the estimate could not be priced), and then this page
+      // renders precisely as it did before delivery existed. A 0 is NOT
+      // absence — it is shown as "Free", which is the reason the total
+      // matches the item rows.
+      var hasDelivery = typeof d.deliveryFeeCents === 'number';
+      if (hasDelivery) {
+        addRow('Delivery', '', d.deliveryFeeCents === 0 ? 'Free' : money(d.deliveryFeeCents));
+      }
+
+      // Prefer the delivery-inclusive figure the function computed, so this
+      // total is the same arithmetic the email did. Falling back to
+      // estimateCents (+ the fee, should an older function send the row
+      // without the total) keeps a no-delivery draft on its current copy.
+      var totalCents = null;
+      if (typeof d.estimateTotalCents === 'number') {
+        totalCents = d.estimateTotalCents;
+      } else if (typeof d.estimateCents === 'number') {
+        totalCents = d.estimateCents + (hasDelivery ? d.deliveryFeeCents : 0);
+      }
+      if (totalCents !== null) {
+        $('total').textContent = 'Estimated total: ' + money(totalCents);
         $('total').hidden = false;
         $('estimate-note').hidden = false;
       }
