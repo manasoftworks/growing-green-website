@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Review your order — Growing Green</title>
+  <meta name="robots" content="noindex,nofollow">
+  <link rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
+  <meta name="theme-color" content="#228B22">
+  <!--
+    Approve / Decline landing page for an order the farm changed before packing.
+
+    Serves TWO rails from one page:
+      batch  — the farm changed the order BEFORE packing and is asking the
+               customer to consent to the change. A batch is a batch, not a
+               substitution: it may swap a line (chard sold out, kale instead),
+               add a line, or raise a quantity, in any mixture, and every one of
+               those parks the order. The change table shows one row per change,
+               whatever kind it is, so a batch of pure additions renders as a
+               real table and not a blank one.
+      drift  — the picked weight moved the total (the older reconfirm rail).
+               No line changes at all, just the two totals.
+
+    The rail is read off the payload's CONTENTS (`changes[]` non-empty) rather
+    than off a `kind` string alone, so a park reason shipped after this file was
+    last touched still renders its lines instead of claiming a swap that isn't
+    there. Nothing here derives a quantity or a total: both come from the
+    function that owns the money, verbatim.
+
+    WHY IT LIVES HERE (same reason as standing-order.html): Supabase's gateway
+    serves every HTML response from *.supabase.co/functions/v1/* as text/plain
+    under `CSP: default-src 'none'; sandbox`, so a function-hosted page has no
+    working buttons at all. On our own domain there is no such policy.
+
+    WHY THE BUTTONS ARE FORMS, NOT LINKS — this is the security point of the
+    page, not a style preference. order-reconfirm used to approve or decline on
+    a GET and nullify the one-time token while doing it, so any mail scanner,
+    corporate link-rewriter or inbox prefetcher that followed the link in the
+    customer's own email could approve — or cancel — their order before a human
+    ever read it. Actions are POST-only now. Nothing on this page may ever
+    become an <a href> that mutates: a GET here must stay a read. That property
+    does not depend on any of the script below — it is a property of the
+    endpoint, and this page simply never offers a mutating GET.
+
+    DEGRADED PATHS. The forms are wired from the query string ALONE, before the
+    lookup, so a failed or slow fetch still leaves a buyer who can answer —
+    losing the change table is an inconvenience, leaving the order parked is
+    not. What genuinely needs JavaScript is the form's `action`: the Supabase
+    project to POST back to travels in the `api` parameter (one static page,
+    two environments), and a static host cannot bake it into the markup. With
+    scripting off we therefore say so plainly in the <noscript> block rather
+    than showing two buttons that would POST to this page and 404 — see the
+    2026-08-02 standing-order report for what a dead confirm button costs.
+
+    SECURITY: order data arrives as JSON and is written with textContent, so a
+    farm, product or note string containing markup is inert.
+  -->
+  <style>
+    *, *::before, *::after { box-sizing: border-box; }
+    body { margin: 0; background: #f5f5f5; color: #333;
+           font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; }
+    .container { max-width: 480px; margin: 32px auto; background: #fff; border-radius: 12px;
+                 overflow: hidden; box-shadow: 0 2px 12px rgba(0,0,0,.1); }
+    .header { background: #2e7d32; padding: 20px; text-align: center; color: #fff;
+              font-size: 20px; font-weight: 700; }
+    .body { padding: 28px 24px; }
+    h2 { text-align: center; margin: 0 0 4px; font-size: 18px; color: #333; }
+    .sub { text-align: center; color: #666; font-size: 14px; margin: 0 0 20px; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; margin-bottom: 8px; }
+    th { padding: 6px 0; text-align: left; color: #2e7d32; font-weight: 600; border-bottom: 2px solid #2e7d32; }
+    td { padding: 8px 0; border-bottom: 1px solid #e8f5e9; vertical-align: top; }
+    td.now { text-align: right; }
+    .unit { display: block; font-size: 12px; color: #999; margin-top: 2px; }
+    /* The part of a partly-swapped line that is still coming — green, because
+       it is good news sitting next to a struck-through line and must not read
+       as more of the same loss. */
+    .unit.keep { color: #2e7d32; }
+    .was { color: #999; text-decoration: line-through; }
+    .note-box { background: #f5f5f5; border-left: 3px solid #2e7d32; border-radius: 4px;
+                padding: 12px 14px; margin: 16px 0 4px; font-size: 14px; line-height: 1.5; }
+    .note-box .label { display: block; font-size: 12px; font-weight: 700; color: #2e7d32;
+                       text-transform: uppercase; letter-spacing: .04em; margin-bottom: 4px; }
+    .totals { margin: 20px 0 4px; font-size: 14px; }
+    .totals .row { display: flex; justify-content: space-between; padding: 6px 0; }
+    .totals .row.new { border-top: 1px solid #e0e0e0; margin-top: 4px; padding-top: 10px;
+                       font-size: 18px; font-weight: 700; color: #2e7d32; }
+    .totals .amount.old { color: #999; }
+    .btn { width: 100%; padding: 14px; border: none; border-radius: 8px; font-size: 16px;
+           font-weight: 700; color: #fff; background: #2e7d32; cursor: pointer; }
+    .btn-secondary { width: 100%; padding: 11px; border: 1px solid #ccc; border-radius: 8px;
+                     font-size: 14px; color: #666; background: none; cursor: pointer; margin-top: 10px; }
+    .btn:disabled, .btn-secondary:disabled { opacity: .6; cursor: not-allowed; }
+    .note { text-align: center; font-size: 12px; color: #999; margin-top: 16px; line-height: 1.5; }
+    .footer { background: #f5f5f5; padding: 16px 24px; text-align: center; font-size: 12px;
+              color: #999; border-top: 1px solid #e0e0e0; }
+    .footer a { color: #2e7d32; }
+    .state { text-align: center; padding: 40px 24px; }
+    .state h2 { color: #2e7d32; margin-bottom: 12px; font-size: 20px; }
+    .state p { color: #666; font-size: 15px; line-height: 1.5; margin: 0; }
+    form { margin: 0; }
+    [hidden] { display: none !important; }
+  </style>
+  <!--
+    Scripting off: swap the perpetual "Loading…" for something the buyer can
+    act on. A <style> inside <noscript> is valid here in <head>, and it is the
+    only way a static page can answer this case at all.
+  -->
+  <noscript><style>
+    #loading { display: none !important; }
+    #noscript-msg { display: block !important; }
+  </style></noscript>
+</head>
+<body>
+  <div class="container">
+    <div class="header">Growing Green</div>
+
+    <div class="state" id="loading"><p>Loading your order…</p></div>
+
+    <div class="state" id="noscript-msg" hidden>
+      <h2>Turn on JavaScript to answer</h2>
+      <p>
+        This page needs JavaScript to send your answer securely. Open the link
+        from your order email in another browser, or reply to that email and the
+        farm will sort it out with you.
+      </p>
+    </div>
+
+    <div class="body" id="main" hidden>
+      <h2 id="heading">Your order was updated</h2>
+      <p class="sub" id="ref-line"></p>
+
+      <table id="changes-table" hidden>
+        <thead><tr><th>Was</th><th style="text-align:right">Now</th></tr></thead>
+        <tbody id="changes"></tbody>
+      </table>
+
+      <div class="note-box" id="note-box" hidden>
+        <span class="label">Note from the farm</span>
+        <span id="note-text"></span>
+      </div>
+
+      <div class="totals" id="totals" hidden>
+        <div class="row" id="before-row"><span>Previous total</span><span class="amount old" id="before-total"></span></div>
+        <div class="row new"><span id="after-label">New total</span><span class="amount" id="after-total"></span></div>
+      </div>
+
+      <!--
+        Real form POSTs, not fetch() and NEVER links: the edge function answers
+        with a 303 to /pay-result, so a submit needs nothing from us afterwards,
+        it survives a double-tap (the second POST hits the already-resolved
+        guard and lands on "already handled"), and — the reason the page exists
+        — no scanner following a URL from the inbox can act on the order,
+        because acting requires a POST that only a human clicking here performs.
+      -->
+      <form method="post" id="approve-form">
+        <button type="submit" class="btn" id="approve-btn">Approve</button>
+      </form>
+      <form method="post" id="decline-form">
+        <button type="submit" class="btn-secondary" id="decline-btn">Decline</button>
+      </form>
+
+      <p class="note" id="action-note">
+        Approve accepts the updated order. Decline turns the change down — if
+        nothing is left to pack, your order is cancelled and you are not charged.
+      </p>
+    </div>
+
+    <div class="state" id="oops" hidden>
+      <div style="font-size:48px;margin-bottom:16px">⚠️</div>
+      <h2 id="oops-title">Something went wrong</h2>
+      <p id="oops-body"></p>
+    </div>
+
+    <div class="footer">
+      Growing Green · <a href="https://growinggreen.app/support.html">Support</a>
+    </div>
+  </div>
+
+  <script>
+  (function () {
+    var $ = function (id) { return document.getElementById(id); };
+    function show(id) {
+      ['loading', 'main', 'oops'].forEach(function (k) { $(k).hidden = (k !== id); });
+    }
+    function fail(title, body) {
+      $('oops-title').textContent = title;
+      $('oops-body').textContent = body;
+      show('oops');
+    }
+    function money(cents) { return '$' + ((cents || 0) / 100).toFixed(2); }
+
+    var q = new URLSearchParams(window.location.search);
+    var token = q.get('token');
+    var api = q.get('api');
+
+    // The API base travels in the link so one static page serves both of our
+    // environments. It is pinned to an EXACT list of our own projects.
+    //
+    // ⚠️ DO NOT relax this to a pattern like /\.supabase\.co$/. Anyone can
+    // create a free Supabase project on that domain; a wildcard would let an
+    // attacker craft .../order-review?api=https://theirs.supabase.co and have
+    // this page — on the real growinggreen.app origin, under our header, with a
+    // valid padlock — POST the buyer's one-time reconfirm token to THEIR
+    // server. Same invariant as pay.html and standing-order.html; pay.html's
+    // was caught in review before any customer saw a payment link.
+    var API_ALLOWED = [
+      'https://zorrzpdfequbymjgocga.supabase.co', // production
+      'https://atocyakoajynffvpeyis.supabase.co'  // staging
+    ];
+    var apiOk = false;
+    try {
+      // Compare the normalised origin, so a userinfo@, port, path or casing
+      // trick cannot smuggle a different host past a string compare.
+      apiOk = API_ALLOWED.indexOf(new URL(api).origin) !== -1;
+    } catch (e) { apiOk = false; }
+
+    var UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!token || !UUID_RE.test(token) || !apiOk) {
+      fail('That link isn’t valid', 'Use the link from your order email, or contact the farm.');
+      return;
+    }
+
+    var base = new URL('/functions/v1/order-reconfirm', api);
+    function actionUrl(action) {
+      var u = new URL(base.toString());
+      u.searchParams.set('token', token);
+      u.searchParams.set('action', action);
+      return u.toString();
+    }
+    // Wired from the query string alone, BEFORE the fetch — if the lookup
+    // fails the buyer can still answer, which is the whole point of the page.
+    $('approve-form').action = actionUrl('approve');
+    $('decline-form').action = actionUrl('decline');
+
+    // Guard against a double submit resubmitting after the 303 has been
+    // requested but before the browser navigates.
+    ['approve-form', 'decline-form'].forEach(function (id) {
+      $(id).addEventListener('submit', function () {
+        $('approve-btn').disabled = true;
+        $('decline-btn').disabled = true;
+        $('approve-btn').textContent = 'Working…';
+      });
+    });
+
+    // Read-only lookup. `format=json` is the ONLY GET this rail answers with
+    // data, and it must never mutate the order or spend the token.
+    var infoUrl = new URL(base.toString());
+    infoUrl.searchParams.set('token', token);
+    infoUrl.searchParams.set('format', 'json');
+
+    fetch(infoUrl.toString(), { headers: { accept: 'application/json' } })
+      .then(function (r) { return r.json(); })
+      .then(function (d) {
+        if (!d || d.ok !== true) {
+          // Terminal states (already approved, declined, cancelled, …) are
+          // answered by the function as a redirect to /pay-result, so reaching
+          // here means a genuine lookup problem.
+          if (d && d.redirect) { window.location.replace(d.redirect); return; }
+          fail('We couldn’t find that order',
+               'It may already have been handled. Use the link from your order email, or contact the farm.');
+          return;
+        }
+        render(d);
+      })
+      .catch(function () {
+        // Network failure: still show the buttons. Losing the change table is
+        // an inconvenience; losing the ability to answer leaves the order
+        // parked and the farm waiting.
+        $('ref-line').textContent =
+          'We couldn’t load the details — you can still approve or decline below.';
+        show('main');
+      });
+
+    function render(d) {
+      // Every value below is written as TEXT — a farm, product or note string
+      // containing markup is displayed, never executed.
+      var farm = d.farmName || 'The farm';
+      var changes = Array.isArray(d.changes) ? d.changes : [];
+
+      // WHY the rail is decided by the rows and not by `kind` alone: an order
+      // parks for approval whenever the farmer's batch swapped a line, added
+      // one, or raised a quantity, so what the customer is consenting to is a
+      // BATCH — and every kind of change in it arrives here as a row in
+      // `changes`. Drift is the only rail with genuinely nothing to list. If a
+      // payload turns up with neither (a park reason this page has not met, or
+      // a batch whose rows failed to load) we keep the neutral copy already in
+      // the markup rather than announcing a swap that may not exist.
+      var rail = (d.kind === 'drift') ? 'drift' : (changes.length ? 'batch' : 'unknown');
+
+      $('heading').textContent = rail === 'drift'
+        ? farm + ' updated your total'
+        : rail === 'batch'
+          ? farm + ' ' + batchHeadline(changes)
+          : farm + ' updated your order';
+      $('ref-line').textContent = d.orderRef
+        ? 'Order ' + d.orderRef
+        : 'Please review the change below.';
+
+      // One row per change, of any kind. A drift review has no line changes at
+      // all, so the two totals below carry its whole story and the table stays
+      // hidden — one page, both rails.
+      if (changes.length) renderChanges(changes);
+
+      var note = (d.note || '').trim();
+      if (note) {
+        $('note-text').textContent = note;
+        $('note-box').hidden = false;
+      }
+
+      if (typeof d.beforeTotalCents === 'number' && typeof d.afterTotalCents === 'number') {
+        $('before-total').textContent = money(d.beforeTotalCents);
+        $('after-total').textContent = money(d.afterTotalCents);
+        // An even swap — kale at the price of the chard it replaced — leaves the
+        // total alone, and a batch can too. Printing "Previous $32.00 / New
+        // $32.00" reads as a broken page, so an unchanged total says so once
+        // instead of twice. Compared as sent; nothing is recomputed here.
+        var sameTotal = d.beforeTotalCents === d.afterTotalCents;
+        $('before-row').hidden = sameTotal;
+        $('after-label').textContent = sameTotal ? 'Order total (unchanged)' : 'New total';
+        $('totals').hidden = false;
+      }
+
+      // Button copy states the actual consequence of each answer, because they
+      // differ by rail: declining a BATCH undoes the whole batch and leaves the
+      // customer with the order they placed, while declining a drift review
+      // cancels the order outright.
+      if (rail === 'batch') {
+        var swapOnly = changes.every(function (c) { return !!c && c.kind === 'substitute'; });
+        var many = changes.length > 1;
+        $('approve-btn').textContent = swapOnly
+          ? (many ? 'Approve the swaps' : 'Approve the swap')
+          : (many ? 'Approve these changes' : 'Approve this change');
+        $('decline-btn').textContent = 'No thanks — keep my original order';
+        $('action-note').textContent =
+          'Approve and the farm packs your order exactly as shown above; your ' +
+          'card is charged the new total when it’s ready. Decline and the whole ' +
+          'update is undone — anything the farm added is left out and every ' +
+          'other line goes back to what you ordered.';
+      } else if (rail === 'drift') {
+        $('approve-btn').textContent = 'Approve the new total';
+        $('decline-btn').textContent = 'Cancel my order';
+        $('action-note').textContent =
+          'Approve and your card is charged the new total. Decline and your ' +
+          'order is cancelled — you won’t be charged.';
+      }
+      // 'unknown': the markup's own neutral copy stands. It promises nothing
+      // about a specific line, which is the only honest thing to say when we
+      // were not told what changed.
+
+      show('main');
+    }
+
+    // Headline wording follows what the batch ACTUALLY contains, so a batch of
+    // plain additions never announces a swap and a mixed batch never claims to
+    // be one thing. Composition only — no quantity or total is inferred here.
+    function batchHeadline(changes) {
+      var kinds = {};
+      changes.forEach(function (c) { kinds[(c && c.kind) || 'other'] = true; });
+      var names = Object.keys(kinds);
+      var many = changes.length > 1;
+      if (names.length === 1) {
+        if (names[0] === 'substitute') return many ? 'needs to swap some items' : 'needs to swap an item';
+        if (names[0] === 'add') return many ? 'added items to your order' : 'added an item to your order';
+        if (names[0] === 'remove') return many ? 'removed items from your order' : 'removed an item from your order';
+        if (names[0] === 'qty') return many ? 'changed some quantities on your order' : 'changed a quantity on your order';
+      }
+      return 'changed your order';
+    }
+
+    function renderChanges(changes) {
+      var tbody = $('changes');
+
+      // One cell builder for both sides of a row: the item name, with its unit
+      // price on a second muted line when the function sent one (`price` is
+      // unit cents, same shape send-order-adjusted renders in the email), and
+      // an optional third muted line for anything else true of that side.
+      function cell(side, entry, placeholder, strike, extra) {
+        var td = document.createElement('td');
+        if (side === 'now') td.className = 'now';
+        if (!entry) {
+          td.textContent = placeholder;
+          td.style.color = '#999';
+          // The residual still belongs on a side with no entry of its own. A
+          // substitute row always carries a `to`, so this is defence only — but
+          // dropping the extra here would silently lose the one line that says
+          // part of the order survives, which is precisely the failure this
+          // round is fixing at the other end of the same contract.
+          if (extra) {
+            var keepOnly = document.createElement('span');
+            keepOnly.className = 'unit keep';
+            keepOnly.textContent = extra;
+            td.appendChild(keepOnly);
+          }
+          return td;
+        }
+        var name = document.createElement('span');
+        if (strike) name.className = 'was';
+        var qty = (entry.quantity == null) ? null : String(entry.quantity);
+        name.textContent = (entry.name || 'Item') + (qty ? ' ×' + qty : '');
+        td.appendChild(name);
+        if (typeof entry.price === 'number') {
+          var unit = document.createElement('span');
+          unit.className = 'unit';
+          unit.textContent = money(entry.price) + ' each';
+          td.appendChild(unit);
+        }
+        if (extra) {
+          var keep = document.createElement('span');
+          keep.className = 'unit keep';
+          keep.textContent = extra;
+          td.appendChild(keep);
+        }
+        return td;
+      }
+
+      // A swap can be PARTIAL: two of five chard become kale and three chard
+      // are still coming. The customer must not read that all five were
+      // replaced. The endpoint sends the swapped quantity in `from` and the
+      // untouched remainder as its own TOP-LEVEL field on the change object,
+      // named `remainingQuantity`; we PRINT that remainder and never subtract
+      // to find it — a page doing its own line math is a second opinion about
+      // somebody's order, and the two would drift apart.
+      //
+      // ⚠️ THE FIELD NAME *IS* THE CONTRACT, AND BOTH HALVES MUST SPELL IT THE
+      // SAME. This read used to be `c.remaining` with a `c.from.remaining`
+      // fallback, while order-reconfirm has only ever emitted
+      // `remainingQuantity` — so neither side named a field the other sent, the
+      // residual never rendered, and a customer swapping 2 of 5 chard still saw
+      // a page implying all five were replaced. That is the bug the previous
+      // round believed it had fixed. Read ONLY the contract name now: a future
+      // mismatch then shows up as a missing line here instead of hiding behind
+      // a fallback that can never fire either. Absent or zero (an outright
+      // whole-line swap), no extra line renders and the row is unchanged.
+      function residualOf(c) {
+        var n = (c && typeof c.remainingQuantity === 'number') ? c.remainingQuantity : null;
+        if (n == null || !(n > 0)) return null;
+        var name = (c.from && c.from.name) || 'the rest';
+        return name + ' ×' + n + ' still in your order';
+      }
+
+      changes.forEach(function (c) {
+        var tr = document.createElement('tr');
+        // A row always shows what was there and what is there now, so an
+        // unknown future kind still renders sensibly; `kind` only supplies the
+        // wording for the empty side (nothing was there / it is going away).
+        // That is what lets ONE table carry a swap, a plain addition and a
+        // quantity change side by side, which is what a parked batch may hold.
+        var gone = !!c.from && !c.to;
+        tr.appendChild(cell('was', c.from, 'Not in your order', !!c.to || gone));
+        // The residual belongs on the NOW side: it describes the order the
+        // customer would be approving, not the line that went away.
+        tr.appendChild(cell('now', c.to, gone ? 'Removed' : '—', false, residualOf(c)));
+        tbody.appendChild(tr);
+      });
+
+      $('changes-table').hidden = false;
+    }
+  })();
+  </script>
+</body>
+</html>

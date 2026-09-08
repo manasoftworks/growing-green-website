@@ -114,6 +114,15 @@
       order_cancelled:['🚫','warn','Order cancelled','Your order has been cancelled and you will not be charged. If that was a mistake, please place a new order.'],
       payment_failed: ['⚠️','bad','Payment declined','We tried to charge your card but it was declined. Contact the farm to arrange another payment method.'],
 
+      // ---- substitutions (order-reconfirm, awaiting_reason='substitution') ----
+      // Spoken to the CUSTOMER, not the operator: what happens to their food
+      // and what happens to their card. Approving does NOT charge anything now
+      // — the farm still has to pack the order — so the copy must not imply a
+      // charge has already gone through.
+      sub_approved:   ['✅','ok','Swap approved','Thanks! The farm will pack your order with the replacement, and your card is charged the new total once it’s ready.'],
+      sub_declined:   ['👍','ok','No problem — we left it out','That item has been removed from your order. You’ll only be charged for the rest, once the farm has it ready.'],
+      sub_declined_cancelled:['🚫','warn','Order cancelled','That was the only item left, so your order has been cancelled and you will not be charged. Please order again any time.'],
+
       // ---- generic ----
       error:          ['⚠️','bad','Something went wrong','Please try the link again, or contact the farm if it keeps happening.'],
       bad_link:       ['🔗','bad','That link isn’t valid','Use the link from your email.']
@@ -128,11 +137,27 @@
     if (entry[1] === 'warn') h.className = 'warn';
     if (entry[1] === 'bad')  h.className = 'bad';
     var bodyText = entry[3];
-    // Optional charged amount — digits only, so it can never carry markup.
+    // Optional amount — digits only, so it can never carry markup. Which total
+    // it is depends on the code: order_confirmed has ALREADY been charged,
+    // whereas the substitution codes name a total that is charged later, when
+    // the farm marks the order ready. Say which, or the buyer reads a charge
+    // that has not happened.
+    var code = q.get('s');
     var amt = (q.get('amt') || '').replace(/[^0-9]/g, '').slice(0, 9);
-    if (amt && q.get('s') === 'order_confirmed') {
-      bodyText = 'Thanks! Your card has been charged $' + (parseInt(amt, 10) / 100).toFixed(2) +
-                 '. The farm will let you know when your order is ready for pickup.';
+    // A zero falls back to the enum copy rather than announcing "$0.00": a
+    // total of nothing means the order was cancelled, not that it is free.
+    if (amt && parseInt(amt, 10) > 0) {
+      var dollars = '$' + (parseInt(amt, 10) / 100).toFixed(2);
+      if (code === 'order_confirmed') {
+        bodyText = 'Thanks! Your card has been charged ' + dollars +
+                   '. The farm will let you know when your order is ready for pickup.';
+      } else if (code === 'sub_approved') {
+        bodyText = 'Thanks! The farm will pack your order with the replacement, and your ' +
+                   'card is charged the new total of ' + dollars + ' once it’s ready.';
+      } else if (code === 'sub_declined') {
+        bodyText = 'That item has been removed from your order. You’ll be charged ' + dollars +
+                   ' for the rest, once the farm has it ready.';
+      }
     }
     document.getElementById('body').textContent = bodyText;
     document.title = entry[2] + ' — Growing Green';
