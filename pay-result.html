@@ -105,6 +105,12 @@
       so_confirming:  ['⏳','ok','Confirming your order','We’re finalising this delivery — check back in a few minutes.'],
       so_auto:        ['✅','ok','Ordering has closed','The confirm window has passed, so your usual order will be placed automatically. Contact the farm if you need a change.'],
 
+      // A confirm refused only because the sales tax couldn't be read (Tax Pack
+      // P8, DN60): the draft stays pending and the buyer may try again. The
+      // sentence is _shared/tax_placement.ts's TAX_UNAVAILABLE byte for byte, so
+      // its apostrophes are straight where the rest of this map's are curly.
+      tax_unavailable:['⚠️','warn','Something went wrong',"We couldn't work out the sales tax for this farm, so your order wasn't placed. Please try again later."],
+
       // ---- order reconfirm (order-reconfirm) ----
       order_confirmed:['✅','ok','Order confirmed','Thanks! Your order is confirmed. The farm will let you know when it’s ready for pickup.'],
       order_invalid:  ['🔗','bad','That link isn’t valid','It may be missing information or have expired. Check the link in your email.'],

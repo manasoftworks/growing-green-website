@@ -123,6 +123,38 @@
     }
     function money(cents) { return '$' + ((cents || 0) / 100).toFixed(2); }
 
+    // Sales tax (Tax Pack P8, DN66). These two BUILD their elements rather than
+    // un-hiding rows in the markup the way the fee rows do, on purpose: with no
+    // tax key in the reply (prod, until M5.1) the rendered page stays byte for
+    // byte what it was before tax existed. tests/pay_tax_test.mjs holds it to
+    // that, so a hidden row added to the markup fails it. Both write TEXT only.
+    function addTaxRow(cents, note) {
+      var box = $('breakdown');
+      var row = document.createElement('div');
+      row.className = 'breakdown-row';
+      var label = document.createElement('span');
+      label.textContent = 'Sales tax'; // tax-classes.md §4, salesTaxLabel
+      var value = document.createElement('span');
+      value.textContent = money(cents);
+      row.appendChild(label); row.appendChild(value);
+      box.appendChild(row);
+      if (note) {
+        var under = document.createElement('div');
+        under.style.cssText = 'font-size:12px;color:#666;text-align:right;margin-top:2px';
+        under.textContent = note;
+        box.appendChild(under);
+      }
+    }
+    function addTaxFooter(text) {
+      var total = $('total');
+      var foot = document.createElement('p');
+      // The negative top margin pulls it up into the total's 24px bottom margin;
+      // its own 24px then keeps the gap above the card field what it was.
+      foot.style.cssText = 'font-size:12px;color:#666;line-height:1.4;margin:-12px 0 24px';
+      foot.textContent = text;
+      total.parentNode.insertBefore(foot, total.nextSibling);
+    }
+
     var q = new URLSearchParams(window.location.search);
     var secret = q.get('secret');
     var orderId = q.get('order');
@@ -208,7 +240,18 @@
       //   > 0    → the fee the buyer is consenting to by saving their card.
       var hasDelivery = d.deliveryFeeCents !== undefined && d.deliveryFeeCents !== null;
       var deliveryFee = hasDelivery ? Math.max(0, Number(d.deliveryFeeCents) || 0) : 0;
-      if (fee > 0 || hasDelivery) {
+      // The tax keys (DN66) are flat, and each is absent when there is nothing
+      // to show:
+      //   taxUnknown → the tax can't be read, so a Subtotal could be holding it.
+      //                The total alone: this overrides every row, delivery's too.
+      //   taxCents   → decided by PRESENCE, as delivery is. A 0 is a certificate
+      //                holder's $0, which prints with its reason beneath it. It
+      //                opens the block by itself: a wholesale pay link has no
+      //                service fee and may have no delivery.
+      var taxUnknown = d.taxUnknown === true;
+      var hasTax = !taxUnknown && d.taxCents !== undefined && d.taxCents !== null;
+      var taxCents = hasTax ? Math.max(0, Number(d.taxCents) || 0) : 0;
+      if (!taxUnknown && (fee > 0 || hasDelivery || hasTax)) {
         // The SERVER owns every figure here. This page used to derive the
         // subtotal as total − service fee, which over-states it by the whole
         // delivery fee on a delivery order; payment-checkout now sends
@@ -217,7 +260,7 @@
         // there is no delivery fee to be wrong about.
         var subtotal = (typeof d.subtotalCents === 'number')
           ? Math.max(0, d.subtotalCents)
-          : Math.max(0, (d.totalCents || 0) - fee - deliveryFee);
+          : Math.max(0, (d.totalCents || 0) - fee - deliveryFee - taxCents);
         $('subtotal').textContent = money(subtotal);
         if (fee > 0) {
           $('service-fee').textContent = money(fee);
@@ -229,9 +272,14 @@
           $('delivery-fee').textContent = deliveryFee > 0 ? money(deliveryFee) : 'Free';
           $('delivery-row').hidden = false;
         }
+        // After every fee by name: tax is never one label with a fee (tax-classes.md §4).
+        if (hasTax) addTaxRow(taxCents, d.taxNote);
         $('breakdown').hidden = false;
       }
       $('total').textContent = money(d.totalCents);
+      // Only beneath a tax row. It says "listed by name above", so it never goes
+      // on a total-only page (tax-classes.md §4, DN38).
+      if (hasTax && d.taxFooter) addTaxFooter(d.taxFooter);
       // Same delivery signal as the fee row above (payment-checkout sends
       // fulfillmentMethod alongside it), so this page says what the payment
       // email that linked here says — "ready for delivery" on a delivery
